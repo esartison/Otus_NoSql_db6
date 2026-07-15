@@ -50,155 +50,422 @@ volumes:
 ```
 docker compose -f docker-compose.yml up -d
 ```
-<img width="1892" height="230" alt="image" src="https://github.com/user-attachments/assets/3a3d2e9e-f181-481e-b8f9-d2f62ff0d813" />
+<img width="1892" height="230" alt="image" src="https://github.com/user-attachments/assets/ba17c91b-109f-4f68-8421-18b1c9dd4b73" />
+
 
 выполнить тестовое подключение
-<img width="1890" height="102" alt="image" src="https://github.com/user-attachments/assets/bb49e5b7-cb97-4aa3-8bfe-e46d44a5d6de" />
+```
+docker exec -it clickhouse-demo clickhouse-client -u demo --password demo  -q "SELECT version()"
+```
+<img width="1431" height="48" alt="image" src="https://github.com/user-attachments/assets/b79318bb-8f2c-4676-8e88-80e327ae40b6" />
+
 
 
 ## выполнить импорт тестовой БД ## 
-Одна из таблиц должна иметь составной Partition key, как минимум одно поле - clustering key, как минимум одно поле не входящее в primiry key.
-Заполнить данными обе таблицы.
 
-создать keyspace esartison
+создал базу esartison и создал таблицу synthetic_test с синтетическими данными
 ```
-CREATE KEYSPACE esartison
-WITH replication = {
-  'class': 'SimpleStrategy',
-  'replication_factor': 1
-};
+docker exec -it clickhouse-demo clickhouse-client -u demo --password demo
+CREATE DATABASE IF NOT EXISTS esartison;
+USE esartison;
+
+SELECT * FROM generateRandom('trip_id UInt32, price Float32, user String', 1, 10, 2) LIMIT 1000000;
+
+CREATE TABLE synthetic_test
+ENGINE = MergeTree
+ORDER BY tuple()
+AS SELECT *
+FROM generateRandom('trip_id UInt32, price Float32, user String', 1, 10, 2)
+LIMIT 1000000
+
+Query id: 948ee40b-c278-4722-ba4c-118b1b313587
+
+Ok.
+
+0 rows in set. Elapsed: 0.132 sec. Processed 1.19 million rows, 26.08 MB (8.97 million rows/s., 197.35 MB/s.)
+Peak memory usage: 37.51 MiB.
 ```
 
-Создать таблицу transaction_history и заполнить данными
+## выполнить несколько запросов и оценить скорость выполнения. ## 
+
+выполнил простые запросы, скорость очень хорошая
 ```
-Partition Key: (user_id, transaction_month)
-Clustering Key: transaction_time
+52331f8a59e7 :) select count(0) from synthetic_test;
 
-CREATE TABLE esartison.transaction_history (
-    user_id uuid,
-    transaction_month text,
-    transaction_time timestamp,
-    amount decimal,
-    merchant text,
-    PRIMARY KEY ((user_id, transaction_month), transaction_time)
-) WITH CLUSTERING ORDER BY (transaction_time DESC);
+SELECT count(0)
+FROM synthetic_test
 
---- 1-я партиция
-INSERT INTO  esartison.transaction_history (user_id, transaction_month, transaction_time, amount, merchant)
-VALUES (
-    6a2f7df3-ba3a-4be7-9b7e-9730722956cf, 
-    '2026-07', 
-    '2026-07-01 10:15:30+0000', 
-    45.50, 
-    'Supermarket Magnit'
+Query id: b6a335f3-f4b4-4da4-a373-1777d1420f09
+
+   ┌─count(0)─┐
+1. │  1000000 │
+   └──────────┘
+
+1 row in set. Elapsed: 0.009 sec. 
+
+
+
+52331f8a59e7 :) select distinct user from synthetic_test;
+
+SELECT DISTINCT user
+FROM synthetic_test
+
+Query id: 8ced408b-15fa-4080-b1a9-96f36767a1f5
+
+       ┌─user───────┐
+    1. │ 1j:a       │
+    2. │ xY$Pwpj}z] │
+
+  Showed first 10000.
+
+731560 rows in set. Elapsed: 0.625 sec. Processed 1.00 million rows, 14.00 MB (1.60 million rows/s., 22.41 MB/s.)
+Peak memory usage: 264.49 MiB.
+```
+
+
+## развернуть дополнительно одну из тестовых БД https://clickhouse.com/docs/en/getting-started/example-datasets , протестировать скорость запросов ## 
+
+Используем dataset [COVID-19 open data](https://clickhouse.com/docs/getting-started/example-datasets/covid19) для загрузки данных
+
+создаем таблицу и загружаем данные
+```
+52331f8a59e7 :) CREATE TABLE covid19 (
+    date Date,
+    location_key LowCardinality(String),
+    new_confirmed Int32,
+    new_deceased Int32,
+    new_recovered Int32,
+    new_tested Int32,
+    cumulative_confirmed Int32,
+    cumulative_deceased Int32,
+    cumulative_recovered Int32,
+    cumulative_tested Int32
+)
+ENGINE = MergeTree
+ORDER BY (location_key, date);
+
+CREATE TABLE covid19
+(
+    `date` Date,
+    `location_key` LowCardinality(String),
+    `new_confirmed` Int32,
+    `new_deceased` Int32,
+    `new_recovered` Int32,
+    `new_tested` Int32,
+    `cumulative_confirmed` Int32,
+    `cumulative_deceased` Int32,
+    `cumulative_recovered` Int32,
+    `cumulative_tested` Int32
+)
+ENGINE = MergeTree
+ORDER BY (location_key, date)
+
+Query id: 0fb57ad1-1ad5-46c3-aaf0-f0ce59a5ce4a
+
+Ok.
+
+0 rows in set. Elapsed: 0.019 sec. 
+
+52331f8a59e7 :) INSERT INTO covid19
+   SELECT *
+   FROM
+      url(
+        'https://storage.googleapis.com/covid19-open-data/v3/epidemiology.csv',
+        CSVWithNames,
+        'date Date,
+        location_key LowCardinality(String),
+        new_confirmed Int32,
+        new_deceased Int32,
+        new_recovered Int32,
+        new_tested Int32,
+        cumulative_confirmed Int32,
+        cumulative_deceased Int32,
+        cumulative_recovered Int32,
+        cumulative_tested Int32'
+    );
+
+INSERT INTO covid19 SELECT *
+FROM url('https://storage.googleapis.com/covid19-open-data/v3/epidemiology.csv', CSVWithNames, 'date Date,\n        location_key LowCardinality(String),\n        new_confirmed Int32,\n        new_deceased Int32,\n        new_recovered Int32,\n        new_tested Int32,\n        cumulative_confirmed Int32,\n        cumulative_deceased Int32,\n        cumulative_recovered Int32,\n        cumulative_tested Int32')
+
+Query id: b90cc4ac-1c03-411c-a27e-0808aaddd2d5
+
+Ok.
+
+0 rows in set. Elapsed: 60.529 sec. Processed 12.53 million rows, 451.11 MB (206.94 thousand rows/s., 7.45 MB/s.)
+Peak memory usage: 205.66 MiB.
+
+52331f8a59e7 :) commit;
+
+COMMIT
+
+Query id: 47f595f6-9cd8-430b-9d4d-db361bdfd364
+
+
+Elapsed: 0.003 sec. 
+
+```
+
+
+выполним несколько запросов и сохраним время выполнения
+```
+52331f8a59e7 :) SELECT formatReadableQuantity(count())
+FROM covid19;
+
+SELECT formatReadableQuantity(count())
+FROM covid19
+
+Query id: 522eae49-914d-4942-ba23-5e7bc212acec
+
+   ┌─formatReadableQuantity(count())─┐
+1. │ 12.53 million                   │
+   └─────────────────────────────────┘
+
+1 row in set. Elapsed: 0.008 sec. 
+
+52331f8a59e7 :) SELECT formatReadableQuantity(sum(new_confirmed))
+FROM covid19;
+
+SELECT formatReadableQuantity(sum(new_confirmed))
+FROM covid19
+
+Query id: b3ebf758-1f22-49f7-9fb4-ec172f509e3a
+
+   ┌─formatReadableQuantity(sum(new_confirmed))─┐
+1. │ 1.39 billion                               │
+   └────────────────────────────────────────────┘
+
+1 row in set. Elapsed: 0.034 sec. Processed 12.53 million rows, 50.10 MB (372.30 million rows/s., 1.49 GB/s.)
+Peak memory usage: 405.22 KiB.
+
+52331f8a59e7 :) SELECT
+   AVG(new_confirmed) OVER (PARTITION BY location_key ORDER BY date ROWS BETWEEN 2 PRECEDING AND 2 FOLLOWING) AS cases_smoothed,
+   new_confirmed,
+   location_key,
+   date
+FROM covid19;
+
+SELECT
+    AVG(new_confirmed) OVER (PARTITION BY location_key ORDER BY date ASC ROWS BETWEEN 2 PRECEDING AND 2 FOLLOWING) AS cases_smoothed,
+    new_confirmed,
+    location_key,
+    date
+FROM covid19
+
+Query id: fcef48bd-e01e-4f59-8d8d-091262e64873
+
+       ┌─────cases_smoothed─┬─new_confirmed─┬─location_key─┬───────date─┐
+    1. │                  0 │             0 │ AD           │ 2020-01-01 │
+    2. │                  0 │             0 │ AD           │ 2020-01-02 │
+    3. │                  0 │             0 │ AD           │ 2020-01-03 │
+    4. │                  0 │             0 │ AD           │ 2020-01-04 │
+....
+ 9998. │               51.2 │            94 │ AF_KDZ       │ 2021-06-28 │
+ 9999. │               62.8 │           101 │ AF_KDZ       │ 2021-06-29 │
+10000. │               82.2 │            35 │ AF_KDZ       │ 2021-07-01 │
+       └─────cases_smoothed─┴─new_confirmed─┴─location_key─┴───────date─┘
+  Showed first 10000.
+
+12525825 rows in set. Elapsed: 2.191 sec. Processed 12.53 million rows, 98.70 MB (5.72 million rows/s., 45.05 MB/s.)
+Peak memory usage: 93.16 MiB.
+
+
+
+52331f8a59e7 :) WITH latest_deaths_data AS
+   ( SELECT location_key,
+            date,
+            new_deceased,
+            new_confirmed,
+            ROW_NUMBER() OVER (PARTITION BY location_key ORDER BY date DESC) AS rn
+     FROM covid19)
+SELECT location_key,
+       date,
+       new_deceased,
+       new_confirmed,
+       rn
+FROM latest_deaths_data
+WHERE rn=1;
+
+WITH latest_deaths_data AS
+    (
+        SELECT
+            location_key,
+            date,
+            new_deceased,
+            new_confirmed,
+            ROW_NUMBER() OVER (PARTITION BY location_key ORDER BY date DESC) AS rn
+        FROM covid19
+    )
+SELECT
+    location_key,
+    date,
+    new_deceased,
+    new_confirmed,
+    rn
+FROM latest_deaths_data
+WHERE rn = 1
+
+Query id: ab0805a7-95bb-4b1c-a19f-2947b0552e59
+
+     ┌─location_key─┬───────date─┬─new_deceased─┬─new_confirmed─┬─rn─┐
+  1. │ AD           │ 2022-09-13 │            0 │            34 │  1 │
+  2. │ AE           │ 2022-09-13 │            0 │           402 │  1 │
+
+
+9998. │ GB_ENG_E09000025 │ 2022-09-14 │            0 │             7 │  1 │
+ 9999. │ GB_ENG_E09000026 │ 2022-09-14 │            0 │            12 │  1 │
+10000. │ GB_ENG_E09000027 │ 2022-09-14 │            0 │             6 │  1 │
+       └─location_key─────┴───────date─┴─new_deceased─┴─new_confirmed─┴─rn─┘
+  Showed first 10000.
+
+20906 rows in set. Elapsed: 4.455 sec. Processed 12.53 million rows, 148.81 MB (2.81 million rows/s., 33.40 MB/s.)
+Peak memory usage: 119.81 MiB.
+```
+
+## развернуть Кликхаус в кластерном исполнении, создать распределенную таблицу, заполнить данными и протестировать скорость по сравнению с 1 инстансом ## 
+
+Запустить БД
+```
+docker compose -f docker-compose.cluster.yml up -d
+```
+<img width="1890" height="390" alt="image" src="https://github.com/user-attachments/assets/bd131208-6903-4678-b22d-72b775a6678d" />
+
+проверить состав кластера
+```
+student:~/clickhouse/clickhouse-demo-main$ docker exec clickhouse-01 clickhouse-client -q \
+  "SELECT shard_num, replica_num, host_name FROM system.clusters WHERE cluster='demo_cluster'"
+1	1	clickhouse-01
+2	1	clickhouse-02
+```
+
+```
+student:~/clickhouse/clickhouse-demo-main$ docker exec -i clickhouse-01 clickhouse-client --multiquery < create_table.sql
+clickhouse-01	9000	0		1	0
+clickhouse-02	9000	0		0	0
+```
+
+Создать распределенную таблицу с ключем секционирования location_key и  загрузить данные в таблицу covid19
+```
+student:~/clickhouse/clickhouse-demo-main$ docker exec -i clickhouse-01 clickhouse-client --multiquery < docker/cluster/create_dist_table.sql
+clickhouse-01	9000	0		1	0
+clickhouse-02	9000	0		0	0
+clickhouse-02	9000	0		1	0
+clickhouse-01	9000	0		0	0
+clickhouse-01	9000	0		1	0
+clickhouse-02	9000	0		0	0
+
+student:~/clickhouse/clickhouse-demo-main$ cat docker/cluster/create_dist_table.sql
+
+CREATE DATABASE IF NOT EXISTS esartison ON CLUSTER demo_cluster;
+use esartison;
+
+CREATE TABLE IF NOT EXISTS covid19_local ON CLUSTER demo_cluster
+(
+    date Date,
+    location_key LowCardinality(String),
+    new_confirmed Int32,
+    new_deceased Int32,
+    new_recovered Int32,
+    new_tested Int32,
+    cumulative_confirmed Int32,
+    cumulative_deceased Int32,
+    cumulative_recovered Int32,
+    cumulative_tested Int32
+)
+ENGINE = MergeTree()
+ORDER BY (location_key, date);
+
+
+CREATE TABLE covid19 ON CLUSTER demo_cluster
+(
+    date Date,
+    location_key LowCardinality(String),
+    new_confirmed Int32,
+    new_deceased Int32,
+    new_recovered Int32,
+    new_tested Int32,
+    cumulative_confirmed Int32,
+    cumulative_deceased Int32,
+    cumulative_recovered Int32,
+    cumulative_tested Int32
+)
+ENGINE = Distributed(
+    'demo_cluster',      -- Name of your 2-node cluster
+    'esartison',               -- Database name where the local table lives
+    'covid19_local',         -- Target physical local table
+    cityHash64(location_key) -- Sharding key expression
 );
-INSERT INTO  esartison.transaction_history (user_id, transaction_month, transaction_time, amount, merchant)
-VALUES (
-    6a2f7df3-ba3a-4be7-9b7e-9730722956cf, 
-    '2026-07', 
-    '2026-07-03 14:22:00+0000', 
-    12.99, 
-    'Netflix'
-);
-INSERT INTO  esartison.transaction_history (user_id, transaction_month, transaction_time, amount, merchant)
-VALUES (
-    6a2f7df3-ba3a-4be7-9b7e-9730722956cf, 
-    '2026-07', 
-    '2026-07-03 19:45:15+0000', 
-    8.20, 
-    'Coffee House'
-);
 
---- 2-я партиция
-INSERT INTO  esartison.transaction_history (user_id, transaction_month, transaction_time, amount, merchant)
-VALUES (
-    6a2f7df3-ba3a-4be7-9b7e-9730722956cf, 
-    '2026-08', 
-    '2026-08-01 09:00:00+0000', 
-    120.00, 
-    'Gas Station'
-);
+INSERT INTO covid19
+   SELECT *
+   FROM
+      url(
+        'https://storage.googleapis.com/covid19-open-data/v3/epidemiology.csv',
+        CSVWithNames,
+        'date Date,
+        location_key LowCardinality(String),
+        new_confirmed Int32,
+        new_deceased Int32,
+        new_recovered Int32,
+        new_tested Int32,
+        cumulative_confirmed Int32,
+        cumulative_deceased Int32,
+        cumulative_recovered Int32,
+        cumulative_tested Int32'
+    );
+commit;
+
 ```
 
-Создать таблицу users_by_country и заполнить данными
+
+Выполнили те же запросы, время выполнения выросло, данные тестовые и ключе секционирования не отлаживал, ожидаемо что время возросло
 ```
-CREATE TABLE IF NOT EXISTS esartison.users_by_country (
-    country text,
-    user_id uuid,
-    first_name text,
-    last_name text,
-    email text,
-    joined_date date,
-    PRIMARY KEY (country, user_id)
-);
-
-INSERT INTO esartison.users_by_country (country, user_id, first_name, last_name, email, joined_date) 
-VALUES ('US', 123e4567-e89b-12d3-a456-426614174000, 'Alice', 'Smith', 'alice@example.com', '2026-01-15');
-
-INSERT INTO esartison.users_by_country (country, user_id, first_name, last_name, email, joined_date) 
-VALUES ('US', 223e4567-e89b-12d3-a456-426614174001, 'Bob', 'Jones', 'bob@example.com', '2026-03-22');
-
-INSERT INTO esartison.users_by_country (country, user_id, first_name, last_name, email, joined_date) 
-VALUES ('UK', 323e4567-e89b-12d3-a456-426614174002, 'Charlie', 'Brown', 'charlie@example.com', '2026-05-10');
+student:~/clickhouse/clickhouse-demo-main$ docker exec clickhouse-01 clickhouse-client -q \
+  "SELECT _shard_num AS shard, count() FROM esartison.covid19 GROUP BY shard ORDER BY shard"
+1	6266643
+2	6259182
 ```
 
-проверить созданные таблицы в keyspace esartison
-<img width="529" height="156" alt="image" src="https://github.com/user-attachments/assets/0b0e816d-4a91-4b29-9e88-63c453462688" />
-
-
-## Выполнить 2-3 варианта запроса использую WHERE ## 
-таблица users_by_country
-<img width="1125" height="286" alt="image" src="https://github.com/user-attachments/assets/48e989cc-61c7-498d-a916-dbb39ca66549" />
-
-таблица transaction_history
-<img width="1178" height="344" alt="image" src="https://github.com/user-attachments/assets/93d5f86c-a93b-4059-99fa-d4b4e337fee3" />
-
-
-## Создать вторичный индекс на поле, не входящее в primiry key. ## 
-создал индекс на таблицу esartison.users_by_country по полю first_name
-<img width="989" height="44" alt="image" src="https://github.com/user-attachments/assets/ecd4699c-5cce-455d-8f81-fbdca2c7f643" />
-
-проверить что индекс используется
+выполним несколько запросов и сохраним время выполнения
 ```
-cqlsh:esartison> tracing on
-Now Tracing is enabled
-cqlsh:esartison> select * from users_by_country where first_name='Bob' ;
+52331f8a59e7 :) SELECT formatReadableQuantity(count()) FROM esartison.covid19;
+####1 row in set. Elapsed: 0.008 sec. 
+1 row in set. Elapsed: 0.015 sec. 
 
- country | user_id                              | email           | first_name | joined_date | last_name
----------+--------------------------------------+-----------------+------------+-------------+-----------
-      US | 223e4567-e89b-12d3-a456-426614174001 | bob@example.com |        Bob |  2026-03-22 |     Jones
 
-(1 rows)
+52331f8a59e7 :) SELECT formatReadableQuantity(sum(new_confirmed)) FROM esartison.covid19;
+###1 row in set. Elapsed: 0.034 sec. Processed 12.53 million rows, 50.10 MB (372.30 million rows/s., 1.49 GB/s.)
+1 row in set. Elapsed: 0.099 sec. Processed 12.53 million rows, 50.10 MB (126.00 million rows/s., 504.01 MB/s.)
 
-Tracing session: f28c3fb0-802c-11f1-80a7-c9ccd4d00bc5
 
- activity                                                                                                                        | timestamp                  | source     | source_elapsed | client
----------------------------------------------------------------------------------------------------------------------------------+----------------------------+------------+----------------+-----------
-                                                                                                              Execute CQL3 query | 2026-07-15 09:09:56.141000 | 172.22.0.2 |              0 | 127.0.0.1
-                                   Parsing select * from users_by_country where first_name='Bob' ; [Native-Transport-Requests-1] | 2026-07-15 09:09:56.144000 | 172.22.0.2 |           3958 | 127.0.0.1
-                                                                               Preparing statement [Native-Transport-Requests-1] | 2026-07-15 09:09:56.145000 | 172.22.0.2 |           4578 | 127.0.0.1
-        Index mean cardinalities are idx_tr_his_first_name:1. Scanning with idx_tr_his_first_name. [Native-Transport-Requests-1] | 2026-07-15 09:09:56.147000 | 172.22.0.2 |           6548 | 127.0.0.1
-                                                                         Computing ranges to query [Native-Transport-Requests-1] | 2026-07-15 09:09:56.149000 | 172.22.0.2 |           8185 | 127.0.0.1
- Submitting range requests on 17 ranges with a concurrency of 17 (0.05625 rows per range expected) [Native-Transport-Requests-1] | 2026-07-15 09:09:56.149000 | 172.22.0.2 |           8774 | 127.0.0.1
-                                                             Submitted 1 concurrent range requests [Native-Transport-Requests-1] | 2026-07-15 09:09:56.151000 | 172.22.0.2 |          10745 | 127.0.0.1
-                                    Executing read on esartison.users_by_country using index idx_tr_his_first_name [ReadStage-3] | 2026-07-15 09:09:56.158000 | 172.22.0.2 |          17585 | 127.0.0.1
-                                        Executing single-partition query on users_by_country.idx_tr_his_first_name [ReadStage-3] | 2026-07-15 09:09:56.158000 | 172.22.0.2 |          17882 | 127.0.0.1
-                                                                                      Acquiring sstable references [ReadStage-3] | 2026-07-15 09:09:56.159000 | 172.22.0.2 |          18678 | 127.0.0.1
-                                         Skipped 0/1 non-slice-intersecting sstables, included 0 due to tombstones [ReadStage-3] | 2026-07-15 09:09:56.159000 | 172.22.0.2 |          18841 | 127.0.0.1
-                                                                Partition index with 0 entries found for sstable 1 [ReadStage-3] | 2026-07-15 09:09:56.160000 | 172.22.0.2 |          19343 | 127.0.0.1
-                                                              Executing single-partition query on users_by_country [ReadStage-3] | 2026-07-15 09:09:56.166000 | 172.22.0.2 |          25997 | 127.0.0.1
-                                                                                      Acquiring sstable references [ReadStage-3] | 2026-07-15 09:09:56.167000 | 172.22.0.2 |          26373 | 127.0.0.1
-                                                                                         Merging memtable contents [ReadStage-3] | 2026-07-15 09:09:56.167000 | 172.22.0.2 |          26523 | 127.0.0.1
-                                                                                       Key cache hit for sstable 1 [ReadStage-3] | 2026-07-15 09:09:56.167000 | 172.22.0.2 |          26834 | 127.0.0.1
-                                                                            Read 1 live rows and 0 tombstone cells [ReadStage-3] | 2026-07-15 09:09:56.171000 | 172.22.0.2 |          30320 | 127.0.0.1
-                                                                         Merged data from memtables and 1 sstables [ReadStage-3] | 2026-07-15 09:09:56.171000 | 172.22.0.2 |          30568 | 127.0.0.1
-                                                                                                                Request complete | 2026-07-15 09:09:56.173179 | 172.22.0.2 |          32179 | 127.0.0.1
+
+52331f8a59e7 :) SELECT
+   AVG(new_confirmed) OVER (PARTITION BY location_key ORDER BY date ROWS BETWEEN 2 PRECEDING AND 2 FOLLOWING) AS cases_smoothed,
+   new_confirmed,
+   location_key,
+   date
+FROM esartison.covid19;
+
+###12525825 rows in set. Elapsed: 2.191 sec. Processed 12.53 million rows, 98.70 MB (5.72 million rows/s., 45.05 MB/s.)
+12525825 rows in set. Elapsed: 3.927 sec. Processed 12.53 million rows, 98.77 MB (3.19 million rows/s., 25.15 MB/s.)
+
+
+
+52331f8a59e7 :) WITH latest_deaths_data AS
+   ( SELECT location_key,
+            date,
+            new_deceased,
+            new_confirmed,
+            ROW_NUMBER() OVER (PARTITION BY location_key ORDER BY date DESC) AS rn
+     FROM esartison.covid19)
+SELECT location_key,
+       date,
+       new_deceased,
+       new_confirmed,
+       rn
+FROM latest_deaths_data
+WHERE rn=1;
+
+
+#### 20906 rows in set. Elapsed: 4.455 sec. Processed 12.53 million rows, 148.81 MB (2.81 million rows/s., 33.40 MB/s.)
+20906 rows in set. Elapsed: 5.635 sec. Processed 12.53 million rows, 148.87 MB (2.22 million rows/s., 26.42 MB/s.)
 ```
-Видим что индекс используется...
-
-
-## (*) нагрузить кластер при помощи Cassandra Stress Tool (используя "How to use Apache Cassandra Stress Tool.pdf" из материалов). ## 
-пропустил шаг, чтобы успеть сделать другие ДЗ.
-
-
-  
